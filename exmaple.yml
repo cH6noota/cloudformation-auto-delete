@@ -1,0 +1,19 @@
+Description: Time Delte Item
+Parameters:
+  BucketName:
+    Type: String
+  Timer:
+    Type: Number
+    MinValue: 3
+    Default: 3
+
+Resources:
+  Fn::Transform:
+    Name: AWS::Include
+    Parameters:
+      Location: s3://バケット名/delete.yml
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Ref: BucketName

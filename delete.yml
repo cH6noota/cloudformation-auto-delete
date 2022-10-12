@@ -1,0 +1,115 @@
+TimeSetupper:
+    Type: Custom::SetupLambda
+    Properties:
+      ServiceToken: 
+        Fn::GetAtt: 
+          - Lambda
+          - Arn
+  
+Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: 
+        Fn::Sub: ${AWS::StackName}-stack-deleter
+      Runtime: python3.9
+      Handler: index.handler
+      Role: 
+        Fn::ImportValue: DeleteLambdaRoleARN
+      Environment:
+        Variables:
+          StackName: 
+            Ref: AWS::StackName
+          AccountID:
+            Ref: AWS::AccountId
+          Timer: 
+            Ref: Timer
+      Code:
+        ZipFile: |
+          from datetime import datetime, timedelta, timezone
+          import cfnresponse
+          import os
+          import boto3
+
+          JST = timezone(timedelta(hours=+9), 'JST')
+
+          StackName = os.environ.get('StackName') 
+          account_id = os.environ.get('AccountID')
+          Timer = int(os.environ.get('Timer', "3") )
+
+
+          def handler(event, context):
+            if event.get('RequestType') == 'Create':
+              create_eb()
+              cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                                  {'Response': 'Success'})
+            elif event.get('RequestType') == 'Delete':
+              delete_eb()
+              cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                                  {'Response': 'Success'})
+            elif event.get('RequestType') == 'Update':
+              print('Update')
+              cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                                  {'Response': 'Success'})
+            else:    
+              client = boto3.client('cloudformation')
+              response = client.delete_stack(
+                  StackName=StackName
+              )
+              print(response)
+              
+              jp_time = datetime.now(JST)
+              print(jp_time)
+              return { 'statusCode': 200, 'exec_date': jp_time.strftime('%Y%m%d') }
+
+
+          def create_eb():
+              client = boto3.client('events')
+
+              event_name = "{}-deleterule".format(StackName)
+              now = datetime.now() + timedelta(minutes=Timer)
+
+              event_time = "cron({} {} * * ? *)".format(now.minute, now.hour)
+              print(event_time)
+
+              description = "CloudFormation {} Stack Delete Rule".format(StackName)
+
+              response = client.put_rule(
+                                  Name=event_name,
+                                  ScheduleExpression= event_time,
+                                  EventPattern='',
+                                  State="ENABLED",
+                                  Description=description)
+              
+              rule_arn = response["RuleArn"]
+              lambda_arn = 'arn:aws:lambda:ap-northeast-1:{}:function:{}-stack-deleter'.format(account_id, StackName)
+
+                  
+              response = client.put_targets(
+                  Rule=event_name,
+                  Targets=[
+                      {
+                          'Id': "lambada-target",
+                          'Arn':  lambda_arn,
+                      }
+                  ]
+              )
+              client = boto3.client('lambda')
+              response = client.add_permission(
+                  FunctionName="{}-stack-deleter".format(StackName),
+                  StatementId='{}-delete'.format(StackName),
+                  Action='lambda:InvokeFunction',
+                  Principal='events.amazonaws.com',
+                  SourceArn=rule_arn
+              )
+              
+              
+          def delete_eb():
+              client = boto3.client('events')
+
+              event_name = "{}-deleterule".format(StackName)
+
+              response = client.remove_targets(
+                  Rule=event_name,
+                  Ids=["lambada-target"]
+              )
+              response = client.delete_rule(Name=event_name)
